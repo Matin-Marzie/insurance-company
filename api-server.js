@@ -2,15 +2,22 @@ import express from 'express';
 import mysql from 'mysql2';
 import bodyParser from 'body-parser';
 
+const SERVER_PORT = 4000;
+
 const app = express();
-const port = 4000;
+const PORT = 3306;
+const HOST = 'sql7.freesqldatabase.com';
+const USERNAME = 'sql7710044';
+const PASSWORD = 'NRXUWYrk38';
+const DATABASE_NAME = 'sql7710044';
 
 // Middleware
 app.use(bodyParser.json());
 
 // Enable CORS
 app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', 'http://localhost:3000');
+  // * : αφήνω όλους να έχουν πρόσβαση στο api και βάση
+  res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
   res.setHeader('Access-Control-Allow-Headers', 'X-Requested-With,content-type');
   res.setHeader('Access-Control-Allow-Credentials', true);
@@ -19,11 +26,26 @@ app.use((req, res, next) => {
 
 // MySQL pool
 const pool = mysql.createPool({
-  host: 'localhost',
-  user: 'root',
-  password: '1234',
-  database: 'Insurance_company'
+  host: HOST,
+  user: USERNAME,
+  password: PASSWORD,
+  database: DATABASE_NAME
 }).promise();
+
+
+// Function to check database connection
+const checkDatabaseConnection = async () => {
+  try {
+    const connection = await pool.getConnection();
+    console.log('Database connection successful');
+    connection.release();
+  } catch (error) {
+    console.error('Database connection error:', error);
+  }
+};
+
+// Check the database connection on startup
+checkDatabaseConnection();
 
 // Login endpoint for Doctor
 app.post('/doctor/login', async (req, res) => {
@@ -62,7 +84,7 @@ app.post('/doctor/visits', async (req, res) => {
   }
 
   try {
-    const query = 'SELECT p.FIRST_NAME, p.LAST_NAME, T_DATE FROM PATIENT p, VISIT v, DOCTOR d WHERE d.DOCTOR_ID = v.DOCTOR_ID AND v.PATIENT_ID = p.PATIENT_ID AND d.DOCTOR_ID = ?';
+    const query = 'SELECT p.FIRST_NAME, p.LAST_NAME, v.VISIT_DATE FROM PATIENT p, VISIT v, DOCTOR d WHERE d.DOCTOR_ID = v.DOCTOR_ID AND v.PATIENT_ID = p.PATIENT_ID AND d.DOCTOR_ID = ?';
     const [rows] = await pool.query(query, [doctorId]);
 
     if (rows.length > 0) {
@@ -209,6 +231,59 @@ app.post('/patient/login', async (req, res) => {
 });
 
 
+
+// Εισαγωγή Ασθενών στην βάση
+app.post('/insert/patient', async (req, res) => {
+  const {
+    firstName,
+    lastName,
+    tel,
+    email,
+    address,
+    age,
+    amka,
+    familyInsuranceProvider,
+    companyId,
+    doctorId
+  } = req.body;
+
+  try {
+    const query = `
+      INSERT INTO PATIENT (
+        FIRST_NAME, 
+        LAST_NAME, 
+        TEL, 
+        EMAIL, 
+        ADDRESS, 
+        AGE, 
+        AMKA, 
+        FAMILY_INSURANCE_PROVIDER, 
+        COMPANY_ID, 
+        DOCTOR_ID
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+    const params = [
+      firstName,
+      lastName,
+      tel,
+      email,
+      address,
+      age,
+      amka,
+      familyInsuranceProvider || null,
+      companyId || null,
+      doctorId || null
+    ];
+    const [result] = await pool.query(query, params);
+    res.json({ message: 'Patient added successfully', patientId: result.insertId });
+  } catch (error) {
+    console.error('Error inserting into the database:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+
+
 // Εισαγωγή επίσκεψης ασθενή
 app.post('/insert/visit', async (req, res) => {
   const {
@@ -282,11 +357,198 @@ app.post('/insert/visit', async (req, res) => {
   }
 });
 
-// 
-// SELECT V.VISIT_ID, V.VISIT_DATE, D.DOCTOR_ID, D.FIRST_NAME, D.LAST_NAME
-// FROM PATIENT P, VISIT V, DOCTOR D
-// WHERE P.PATIENT_ID = V.PATIENT_ID AND V.DOCTOR_ID = D.DOCTOR_ID AND P.PATIENT_ID = 1;
 
+// Επισκέψεις του ασθενή
+app.post('/patient/visits', async (req, res) => {
+  const { patientId } = req.body;
+
+  if (!patientId) {
+    return res.status(400).json({ message: 'Patient ID is required' });
+  }
+
+  try {
+    const query = `
+      SELECT V.VISIT_ID, V.VISIT_DATE, D.DOCTOR_ID, D.FIRST_NAME, D.LAST_NAME
+      FROM PATIENT P, VISIT V, DOCTOR D
+      WHERE P.PATIENT_ID = V.PATIENT_ID AND V.DOCTOR_ID = D.DOCTOR_ID AND P.PATIENT_ID = ?
+    `;
+    const [rows] = await pool.query(query, [patientId]);
+
+    if (rows.length > 0) {
+      res.json(rows);
+    } else {
+      res.status(204).json([]); // No Content
+    }
+  } catch (error) {
+    console.error('Error querying the database:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+
+// Συνταγογραφούμενα φάρμακα του ασθενή
+app.post('/patient/medicines', async (req, res) => {
+  const { patientId } = req.body;
+  try {
+    const query = `
+      SELECT 
+          CONCAT(d.FIRST_NAME, ' ', d.LAST_NAME) AS DOCTOR_NAME,
+          v.TYPE,
+          CASE 
+              WHEN v.TYPE = 'Initial' THEN i.INITIAL_DIAGNOSIS
+              WHEN v.TYPE = 'Follow-Up' THEN f.CURRENT_CONDITION
+          END AS DIAGNOSIS,
+          m.NAME AS MEDICINE_PRESCRIBED,
+          m.DOCTOR_INDICATION
+      FROM 
+          PRESCRIPTION pr
+      JOIN 
+          INCLUDES inc ON pr.PRESCRIPTION_ID = inc.PRESCRIPTION_ID
+      JOIN 
+          MEDICINE m ON inc.MEDICINE_ID = m.MEDICINE_ID
+      JOIN 
+          VISIT v ON pr.VISIT_ID = v.VISIT_ID
+      JOIN 
+          PATIENT p ON pr.PATIENT_ID = p.PATIENT_ID
+      JOIN 
+          DOCTOR d ON pr.DOCTOR_ID = d.DOCTOR_ID
+      LEFT JOIN 
+          INITIAL_VISIT i ON v.VISIT_ID = i.VISIT_ID
+      LEFT JOIN 
+          FOLLOW_UP_VISIT f ON v.VISIT_ID = f.VISIT_ID
+      WHERE 
+          p.PATIENT_ID = ?;
+  `;
+
+    const [rows] = await pool.query(query, [patientId]);
+
+    if (rows.length > 0) {
+      res.json(rows);
+    } else {
+      res.status(204).json([]); // No Content
+    }
+  } catch (error) {
+    console.error('Error querying the database:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+
+// Ποιοί γιατροί και για ποιά διαστήματα παρακολουθούν τον ασθενή X
+app.post('/patient/doctors', async (req, res) => {
+  const { patientId } = req.body;
+  try {
+    const query = `
+      SELECT 
+          DOCTOR.DOCTOR_ID,
+          CONCAT(DOCTOR.FIRST_NAME, ' ', DOCTOR.LAST_NAME) AS DOCTOR_NAME,
+          MONITORS.START_DATE,
+          MONITORS.END_DATE
+      FROM 
+          MONITORS, DOCTOR
+      WHERE 
+          MONITORS.DOCTOR_ID = DOCTOR.DOCTOR_ID AND MONITORS.PATIENT_ID = ?;
+    `;
+
+    const [rows] = await pool.query(query, [patientId]);
+
+    if (rows.length > 0) {
+      res.json(rows);
+    } else {
+      res.status(204).json([]); // No Content
+    }
+  } catch (error) {
+    console.error('Error querying the database:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+
+
+
+// Μέσες τιμές των εξετάσεων στο check up
+app.post('/patient/checkup/avg', async (req, res) => {
+  const { patientId } = req.body;
+  try {
+    const query = `
+      SELECT 
+          AVG(HEIGHT) AS AVERAGE_HEIGHT,
+          AVG(WEIGHT) AS AVERAGE_WEIGHT,
+          AVG(BLOOD_PRESSURE) AS AVERAGE_BLOOD_PRESSURE
+      FROM 
+          CHECK_UP_VISIT
+      WHERE 
+          VISIT_ID IN (
+              SELECT VISIT_ID
+              FROM VISIT
+              WHERE PATIENT_ID = ?
+          );
+    `;
+
+    const [rows] = await pool.query(query, [patientId]);
+
+    if (rows.length > 0) {
+      res.json(rows[0]);
+    } else {
+      res.status(204).json([]); // No Content
+    }
+  } catch (error) {
+    console.error('Error querying the database:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+
+
+// Όλες οι επισκέψεις του ασθενή στον γιατρό Y
+app.post('/patient/visit/doctor', async (req, res) => {
+  const { patientId, doctorId } = req.body;
+  try {
+    const query = `
+      SELECT V.VISIT_DATE
+      FROM DOCTOR D, PATIENT P, VISIT V
+      WHERE D.DOCTOR_ID = V.DOCTOR_ID AND V.PATIENT_ID = P.PATIENT_ID AND P.PATIENT_ID = ? AND D.DOCTOR_ID = ?;
+    `;
+
+    const [rows] = await pool.query(query, [patientId, doctorId]);
+
+    if (rows.length > 0) {
+      res.json(rows);
+    } else {
+      res.status(204).json([]); // No Content
+    }
+  } catch (error) {
+    console.error('Error querying the database:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+
+// Πλήθος των γιατρών που έχει αλλάξει ο ασθενής X
+app.post('/patient/doctor/count', async (req, res) => {
+  const { patientId } = req.body;
+  try {
+    const query = `
+      SELECT 
+          PATIENT_ID,
+          COUNT(DISTINCT DOCTOR_ID) AS CHANGED_DOCTORS_COUNT
+      FROM 
+          MONITORS
+      WHERE PATIENT_ID = ?;
+    `;
+
+    const [rows] = await pool.query(query, [patientId]);
+
+    if (rows.length > 0) {
+      res.json(rows[0]);
+    } else {
+      res.status(204).json({}); // No Content
+    }
+  } catch (error) {
+    console.error('Error querying the database:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
 
 
 
@@ -296,6 +558,6 @@ app.get('/api/ok', (req, res) => {
 });
 
 // Start the server
-app.listen(port, () => {
-  console.log(`Server is running on http://localhost:${port}`);
+app.listen(SERVER_PORT, () => {
+  console.log(`Server is running : ${PORT}`);
 });
