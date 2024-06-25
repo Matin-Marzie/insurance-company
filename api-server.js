@@ -6,10 +6,11 @@ const SERVER_PORT = 4000;
 
 const app = express();
 const PORT = 3306;
+// This database has only chatgpt generated data (fake)
 const HOST = 'sql7.freesqldatabase.com';
-const USERNAME = 'sql7710044';
-const PASSWORD = 'NRXUWYrk38';
-const DATABASE_NAME = 'sql7710044';
+const USERNAME = 'sql7716032';
+const PASSWORD = 'EJxi2z7VUU';
+const DATABASE_NAME = 'sql7716032';
 
 // Middleware
 app.use(bodyParser.json());
@@ -559,5 +560,5 @@ app.get('/api/ok', (req, res) => {
 
 // Start the server
 app.listen(SERVER_PORT, () => {
-  console.log(`Server is running : ${PORT}`);
+  console.log(`Server is running on port: ${PORT}`);
 });
